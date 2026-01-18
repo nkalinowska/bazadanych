@@ -14,16 +14,16 @@ st.title("📦 Zarządzanie Magazynem")
 
 # --- FUNKCJE POMOCNICZE ---
 def get_categories():
-    response = supabase.table("Kategorie").select("*").execute()
+    response = supabase.table("kategorie").select("*").execute()
     return response.data
 
 def get_products():
     # Wykonujemy JOIN, aby pobrać nazwę kategorii zamiast samego ID
-    response = supabase.table("produkty").select("*, Kategorie(nazwa)").execute()
+    response = supabase.table("produkty").select("*, kategorie(nazwa)").execute()
     return response.data
 
 # --- ZAKŁADKI ---
-tab1, tab2 = st.tabs(["Produkty", "Kategorie"])
+tab1, tab2 = st.tabs(["produkty", "kategorie"])
 
 # --- SEKCJA: KATEGORIE ---
 with tab2:
@@ -35,7 +35,7 @@ with tab2:
             kat_nazwa = st.text_input("Nazwa kategorii")
             kat_opis = st.text_area("Opis")
             if st.form_submit_button("Zapisz kategorię"):
-                supabase.table("Kategorie").insert({"nazwa": kat_nazwa, "opis": kat_opis}).execute()
+                supabase.table("kategorie").insert({"nazwa": kat_nazwa, "opis": kat_opis}).execute()
                 st.success("Dodano kategorię!")
                 st.rerun()
 
