@@ -1,110 +1,157 @@
 import streamlit as st
-from supabase import create_client, Client
+from supabase import create_client
+from postgrest.exceptions import APIError
 
-# --- KONFIGURACJA ---
+# --- KONFIGURACJA STRONY ---
 st.set_page_config(page_title="Magazyn Pro", page_icon="📦", layout="wide")
 
+# --- POŁĄCZENIE Z SUPABASE ---
 @st.cache_resource
 def init_connection():
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    try:
+        return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    except Exception as e:
+        st.error(f"Problem z połączeniem: {e}")
+        return None
 
 supabase = init_connection()
 
-# --- DANE ---
-@st.cache_data(ttl=600)
+# --- LOGIKA DANYCH ---
+@st.cache_data(ttl=60)
 def get_categories():
     return supabase.table("kategorie").select("*").order("nazwa").execute().data
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def get_products():
     return supabase.table("produkty").select("*, kategorie(nazwa)").order("nazwa").execute().data
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def get_orders():
-    # Pobieramy zamówienia wraz z nazwą produktu
-    return supabase.table("zamowienia").select("*, produkty(nazwa)").order("created_at", desc=True).execute().data
+    try:
+        # Pobieramy zamówienia wraz z nazwą produktu (relacja)
+        return supabase.table("zamowienia").select("*, produkty(nazwa)").order("created_at", desc=True).execute().data
+    except:
+        return []
 
 def refresh_data():
     st.cache_data.clear()
 
-# --- UI ---
-st.title("📦 System Magazynowo-Zamówieniowy")
+# --- INTERFEJS ---
+st.title("📦 Panel Zarządzania Magazynem")
 
-tab1, tab2, tab3 = st.tabs(["🛒 Magazyn", "📝 Nowe Zamówienie", "📂 Kategorie & Historia"])
+# ROZDZIELONE ZAKŁADKI
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🛒 Stan Magazynowy", 
+    "➕ Nowe Zamówienie", 
+    "📂 Kategorie", 
+    "📜 Historia Zamówień"
+])
 
-# --- TAB 1: MAGAZYN & ALERTY ---
+# --- 1. MAGAZYN ---
 with tab1:
+    st.header("Aktualne Produkty")
     produkty = get_products()
-    low_stock = [p for p in produkty if p['liczba'] < 10]
     
-    if low_stock:
-        st.error(f"⚠️ Niskie stany: {', '.join([p['nazwa'] for p in low_stock])}")
-
-    st.subheader("Aktualne stany")
     if produkty:
-        # Wyświetlamy jako ładną tabelę (Dataframe)
-        df_data = [{
-            "Produkt": p['nazwa'], 
-            "Ilość": p['liczba'], 
-            "Cena": f"{p['cena']} zł", 
-            "Kategoria": p['kategorie']['nazwa'] if p['kategorie'] else "Brak"
-        } for p in produkty]
-        st.dataframe(df_data, use_container_width=True)
+        # Alerty o niskim stanie
+        low_stock = [p for p in produkty if p['liczba'] < 10]
+        if low_stock:
+            st.error(f"⚠️ Należy uzupełnić: {', '.join([p['nazwa'] for p in low_stock])}")
+
+        # Tabela produktów
+        df_display = []
+        for p in produkty:
+            df_display.append({
+                "Produkt": p['nazwa'],
+                "Kategoria": p['kategorie']['nazwa'] if p['kategorie'] else "Brak",
+                "Cena (zł)": f"{p['cena']:.2f}",
+                "Ilość": p['liczba'],
+                "Status": "🔴 NISKI" if p['liczba'] < 10 else "🟢 OK"
+            })
+        st.table(df_display)
     else:
-        st.info("Brak produktów.")
+        st.info("Magazyn jest pusty.")
 
-# --- TAB 2: NOWE ZAMÓWIENIE (LOGIKA) ---
+# --- 2. NOWE ZAMÓWIENIE ---
 with tab2:
-    st.header("Złóż zamówienie")
+    st.header("Realizacja Wydania/Zamówienia")
     produkty = get_products()
-    prod_options = {p['nazwa']: p for p in produkty}
-
-    with st.form("order_form"):
-        wybrany_prod_nazwa = st.selectbox("Wybierz produkt", options=list(prod_options.keys()))
-        ilosc_zam = st.number_input("Ilość", min_value=1, step=1)
-        submit = st.form_submit_button("Zatwierdź zamówienie")
-
-        if submit:
-            prod = prod_options[wybrany_prod_nazwa]
-            
-            if prod['liczba'] >= ilosc_zam:
-                nowa_ilosc = prod['liczba'] - ilosc_zam
-                cena_razem = prod['cena'] * ilosc_zam
-                
-                # 1. Zapisz zamówienie
-                supabase.table("zamowienia").insert({
-                    "produkt_id": prod['id'],
-                    "ilosc": ilosc_zam,
-                    "cena_calkowita": cena_razem
-                }).execute()
-                
-                # 2. Zaktualizuj stan w magazynie
-                supabase.table("produkty").update({"liczba": nowa_ilosc}).eq("id", prod['id']).execute()
-                
-                st.success(f"Zamówienie złożone! Łączny koszt: {cena_razem:.2f} zł")
-                refresh_data()
-                st.rerun()
-            else:
-                st.error(f"Nie ma tyle na stanie! Dostępne: {prod['liczba']}")
-
-# --- TAB 3: HISTORIA I KATEGORIE ---
-with tab3:
-    col_hist, col_kat = st.columns(2)
     
-    with col_hist:
-        st.subheader("Recent Orders")
-        zamowienia = get_orders()
-        if zamowienia:
-            for z in zamowienia:
-                st.text(f"🕒 {z['created_at'][:16]} | {z['produkty']['nazwa']} | x{z['ilosc']} | {z['cena_calkowita']} zł")
-        else:
-            st.write("Brak zamówień.")
+    if produkty:
+        prod_dict = {p['nazwa']: p for p in produkty}
+        with st.form("form_order"):
+            wybor = st.selectbox("Wybierz produkt", options=list(prod_dict.keys()))
+            ilosc = st.number_input("Ilość do wydania", min_value=1, step=1)
+            
+            if st.form_submit_button("Zatwierdź zamówienie"):
+                p = prod_dict[wybor]
+                if p['liczba'] >= ilosc:
+                    # 1. Dodaj do historii zamówień
+                    supabase.table("zamowienia").insert({
+                        "produkt_id": p['id'],
+                        "ilosc": ilosc,
+                        "cena_calkowita": p['cena'] * ilosc
+                    }).execute()
+                    
+                    # 2. Aktualizuj stan magazynowy
+                    supabase.table("produkty").update({"liczba": p['liczba'] - ilosc}).eq("id", p['id']).execute()
+                    
+                    st.success(f"Wydano {ilosc} szt. produktu {wybor}")
+                    refresh_data()
+                    st.rerun()
+                else:
+                    st.error("Błąd: Niewystarczająca ilość w magazynie!")
+    else:
+        st.warning("Brak produktów, dla których można złożyć zamówienie.")
 
-    with col_kat:
-        st.subheader("Kategorie")
-        kat_nazwa = st.text_input("Nowa kategoria")
-        if st.button("Dodaj kategorię"):
-            if kat_nazwa:
-                supabase.table("kategorie").insert({"nazwa": kat_nazwa}).execute()
+# --- 3. KATEGORIE ---
+with tab3:
+    st.header("Zarządzanie Kategoriami")
+    
+    # Formularz dodawania
+    with st.expander("Dodaj nową kategorię"):
+        new_cat = st.text_input("Nazwa kategorii")
+        if st.button("Zapisz kategorię"):
+            if new_cat:
+                supabase.table("kategorie").insert({"nazwa": new_cat}).execute()
+                st.success("Dodano!")
                 refresh_data()
                 st.rerun()
+
+    # Lista kategorii
+    kategorie = get_categories()
+    if kategorie:
+        for k in kategorie:
+            col1, col2 = st.columns([4, 1])
+            col1.write(f"📁 **{k['nazwa']}**")
+            if col2.button("Usuń", key=f"cat_{k['id']}"):
+                try:
+                    supabase.table("kategorie").delete().eq("id", k['id']).execute()
+                    refresh_data()
+                    st.rerun()
+                except:
+                    st.error("Nie można usunąć kategorii, w której są produkty.")
+
+# --- 4. HISTORIA ---
+with tab4:
+    st.header("Historia Transakcji")
+    zamowienia = get_orders()
+    
+    if zamowienia:
+        # Przygotowanie czytelnej tabeli historii
+        historia_wyswietl = []
+        for z in zamowienia:
+            nazwa_p = z['produkty']['nazwa'] if z['produkty'] else "Produkt usunięty"
+            historia_wyswietl.append({
+                "Data": z['created_at'][:16].replace("T", " "),
+                "Produkt": nazwa_p,
+                "Ilość": z['ilosc'],
+                "Wartość (zł)": f"{z['cena_calkowita']:.2f}"
+            })
+        st.dataframe(historia_wyswietl, use_container_width=True)
+        
+        if st.button("Wyczyść historię (tylko widok)", help="To nie usuwa danych z bazy"):
+            refresh_data()
+            st.rerun()
+    else:
+        st.info("Brak zarejestrowanych zamówień.")
